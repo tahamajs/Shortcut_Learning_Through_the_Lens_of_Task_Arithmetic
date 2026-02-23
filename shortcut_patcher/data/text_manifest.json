@@ -1,0 +1,9 @@
+{
+  "toxicity": {
+    "source": "CivilComments",
+    "threshold": 0.8
+  },
+  "control": {
+    "source": "WikiText-103"
+  }
+}

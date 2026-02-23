@@ -1,0 +1,19 @@
+\begin{thebibliography}{1}
+
+\bibitem{geirhos2020shortcut}
+Robert Geirhos, J{"o}rn-Henrik Jacobsen, Claudio Michaelis, et~al.
+\newblock Shortcut learning in deep neural networks.
+\newblock {\em Nature Machine Intelligence}, 2020.
+
+\bibitem{ilharco2023task}
+Gabriel Ilharco, Marco Ribeiro, et~al.
+\newblock Editing models with task arithmetic.
+\newblock In {\em ICLR}, 2023.
+
+\bibitem{murali2023spurious}
+Aditya Murali et~al.
+\newblock Spurious features are unstable: Investigating shortcut dynamics at
+  training time.
+\newblock In {\em NeurIPS Workshop}, 2023.
+
+\end{thebibliography}

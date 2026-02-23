@@ -1,0 +1,15 @@
+{
+  "tasks": [
+    "Cars",
+    "DTD",
+    "EuroSAT",
+    "GTSRB",
+    "MNIST",
+    "RESISC45",
+    "SUN397",
+    "SVHN",
+    "Waterbirds",
+    "CelebA"
+  ],
+  "note": "Populate raw datasets manually or integrate HuggingFace datasets in production."
+}
