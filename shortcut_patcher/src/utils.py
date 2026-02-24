@@ -33,12 +33,28 @@ def synthetic_classification_dataset(
     n_features: int = 256,
     n_classes: int = 10,
     spurious_strength: float = 1.0,
+    *,
+    shortcut_matrix: torch.Tensor | None = None,
+    seed: int | None = None,
 ) -> TensorDataset:
-    x = torch.randn(n_samples, n_features)
-    y = torch.randint(0, n_classes, (n_samples,))
-    # Add a synthetic spurious shortcut signal in the first feature dimensions.
-    shortcut_signal = torch.nn.functional.one_hot(y, n_classes).float() @ torch.randn(n_classes, min(32, n_features))
-    x[:, : shortcut_signal.shape[1]] += spurious_strength * shortcut_signal
+    # Make data generation reproducible if desired
+    g = None
+    if seed is not None:
+        g = torch.Generator()
+        g.manual_seed(seed)
+
+    x = torch.randn(n_samples, n_features, generator=g)
+    y = torch.randint(0, n_classes, (n_samples,), generator=g)
+
+    k = min(32, n_features)
+
+    # FIX: keep the shortcut mapping consistent across splits
+    if shortcut_matrix is None:
+        shortcut_matrix = torch.randn(n_classes, k, generator=g)
+
+    shortcut_signal = torch.nn.functional.one_hot(y, n_classes).float() @ shortcut_matrix
+    x[:, :k] += spurious_strength * shortcut_signal
+
     return TensorDataset(x, y)
 
 
@@ -69,17 +85,35 @@ def load_pretrained(model_name: str, in_dim: int = 256, n_classes: int = 10) -> 
     return model
 
 
-def build_dataloaders(task_name: str, batch_size: int) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    strength = 1.5 if "shortcut" in task_name.lower() else 0.7
-    train = synthetic_classification_dataset(4096, spurious_strength=strength)
-    val = synthetic_classification_dataset(1024, spurious_strength=strength)
-    test = synthetic_classification_dataset(1024, spurious_strength=strength)
+def build_dataloaders(
+    task_name: str, batch_size: int, spurious_strength: float | None = None
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+
+    if spurious_strength is None:
+        strength = 1.5 if "shortcut" in task_name.lower() else 0.7
+    else:
+        strength = spurious_strength
+
+    n_features = 256
+    n_classes = 10
+    k = min(32, n_features)
+
+    # FIX: one shared shortcut mapping across train/val/test
+    shortcut_matrix = torch.randn(n_classes, k)
+
+    # Optional: also keep data generation reproducible per split
+    train = synthetic_classification_dataset(4096, n_features=n_features, n_classes=n_classes,
+                                            spurious_strength=strength, shortcut_matrix=shortcut_matrix, seed=0)
+    val   = synthetic_classification_dataset(1024, n_features=n_features, n_classes=n_classes,
+                                            spurious_strength=strength, shortcut_matrix=shortcut_matrix, seed=1)
+    test  = synthetic_classification_dataset(1024, n_features=n_features, n_classes=n_classes,
+                                            spurious_strength=strength, shortcut_matrix=shortcut_matrix, seed=2)
+
     return (
         DataLoader(train, batch_size=batch_size, shuffle=True),
         DataLoader(val, batch_size=batch_size),
         DataLoader(test, batch_size=batch_size),
     )
-
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict[str, float]:
     model.eval()
