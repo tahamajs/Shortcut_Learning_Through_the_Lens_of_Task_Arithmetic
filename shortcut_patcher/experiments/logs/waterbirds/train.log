@@ -1,4 +1,5 @@
-[2026-02-24 04:19:39,483] starting training task=WaterbirdsShortcut model=synthetic-mlp
-[2026-02-24 04:19:40,133] model head already matches num_classes=10
-model=synthetic-mlp
-[2026-02-24 04:19:40,133] model head already matches num_classes=10
+[2026-02-24 06:37:44,757] starting training task=WaterbirdsShortcut model=resnet18 seed=42
+[2026-02-24 06:37:44,861] device=mps
+[2026-02-24 06:37:51,273] model head classes=None inferred=2
+[2026-02-24 06:42:43,164] step 50 lr=2.5e-06 train_loss=2.2900 val_acc=0.0100 val_loss=2.4372
+[2026-02-24 06:59:48,951] step 100 lr=5e-06 train_loss=1.6865 val_acc=0.3862 val_loss=2.4304

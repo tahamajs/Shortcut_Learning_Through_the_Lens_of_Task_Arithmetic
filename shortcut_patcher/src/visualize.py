@@ -79,10 +79,6 @@ def main(args: argparse.Namespace) -> None:
             steps = infer_steps_from_snapshots(Path(args.snapshot_dir))
         else:
             steps = np.arange(max(len(target), len(control)))
-
-        steps = np.load(args.steps)
-        target = np.load(args.target)
-        control = np.load(args.control)
         plot_accuracy_curve(steps, target, control, output)
 
     print(f"Saved figure to {output}")
@@ -94,7 +90,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--points")
     p.add_argument("--steps", default=None)
     p.add_argument("--snapshot-dir", default=None, help="Infer step numbers from snapshot filenames.")
-    p.add_argument("--steps")
     p.add_argument("--target")
     p.add_argument("--control")
     p.add_argument("--output", required=True)
