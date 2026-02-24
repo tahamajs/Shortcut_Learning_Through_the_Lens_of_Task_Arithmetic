@@ -1,4 +1,4 @@
-[2026-02-24 04:17:05,536] starting training task=WaterbirdsShortcut model=synthetic-mlp
-[2026-02-24 04:17:06,627] model head already matches num_classes=10
+[2026-02-24 04:19:39,483] starting training task=WaterbirdsShortcut model=synthetic-mlp
+[2026-02-24 04:19:40,133] model head already matches num_classes=10
 model=synthetic-mlp
-[2026-02-24 04:17:06,627] model head already matches num_classes=10
+[2026-02-24 04:19:40,133] model head already matches num_classes=10
