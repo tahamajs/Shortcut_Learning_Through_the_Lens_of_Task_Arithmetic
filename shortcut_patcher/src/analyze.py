@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 
 from utils import build_dataloaders, flatten_state_dict, load_pretrained, load_state_dict
+from utils import flatten_state_dict, load_state_dict
 
 
 def load_snapshots(snapshot_dir: Path) -> np.ndarray:
@@ -117,6 +118,7 @@ def main(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Analyze weight trajectories and representations.")
     p.add_argument("--method", choices=["pca", "alignment", "probe", "cca", "extract"], required=True)
+    p.add_argument("--method", choices=["pca", "alignment", "probe", "cca"], required=True)
     p.add_argument("--trajectory")
     p.add_argument("--final-vector")
     p.add_argument("--features")

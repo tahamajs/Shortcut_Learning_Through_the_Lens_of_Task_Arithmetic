@@ -8,6 +8,14 @@ This repository contains a runnable `shortcut_patcher/` implementation for:
 - Analysis utilities (PCA, CCA, probes, gradient alignment, activation extraction).
 - Robust evaluation outputs (accuracy + worst-group accuracy) and CSV/JSON export.
 - A complete LaTeX paper draft under `shortcut_patcher/paper/`.
+This repository now includes a complete implementation scaffold in `shortcut_patcher/` for:
+
+- Fine-tuning models with checkpoint/snapshot logging.
+- Computing task vectors (`w_finetuned - w_pretrained`).
+- Applying task arithmetic edits (negation/addition/scaling, optional layer filtering).
+- Running trajectory analysis (PCA, CCA, probe accuracy, gradient alignment).
+- Producing reproducibility assets (`environment.yml`, `Dockerfile`, `run_pipeline.sh`).
+- Building a full LaTeX paper draft in `shortcut_patcher/paper/`.
 
 ## Quickstart
 

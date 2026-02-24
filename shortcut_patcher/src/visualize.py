@@ -53,6 +53,9 @@ def plot_accuracy_curve(steps: np.ndarray, target: np.ndarray, control: np.ndarr
     plt.figure(figsize=(6, 4))
     plt.plot(sx, target, label="Target accuracy")
     plt.plot(sx2, control, label="Control accuracy")
+    plt.figure(figsize=(6, 4))
+    plt.plot(steps, target, label="Target accuracy")
+    plt.plot(steps, control, label="Control accuracy")
     plt.xlabel("Step")
     plt.ylabel("Accuracy")
     plt.legend()
@@ -77,6 +80,9 @@ def main(args: argparse.Namespace) -> None:
         else:
             steps = np.arange(max(len(target), len(control)))
 
+        steps = np.load(args.steps)
+        target = np.load(args.target)
+        control = np.load(args.control)
         plot_accuracy_curve(steps, target, control, output)
 
     print(f"Saved figure to {output}")
@@ -88,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--points")
     p.add_argument("--steps", default=None)
     p.add_argument("--snapshot-dir", default=None, help="Infer step numbers from snapshot filenames.")
+    p.add_argument("--steps")
     p.add_argument("--target")
     p.add_argument("--control")
     p.add_argument("--output", required=True)

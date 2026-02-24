@@ -105,5 +105,23 @@ python src/visualize.py \
   --target "$RES_DIR/target_acc.npy" \
   --control "$RES_DIR/control_acc.npy" \
   --output "$RES_DIR/accuracy_curve.png"
+  --output experiments/logs/waterbirds
+
+python src/task_vector.py \
+  --pretrained experiments/logs/waterbirds/pretrained.pt \
+  --finetuned experiments/logs/waterbirds/final.pt \
+  --output experiments/results/waterbirds_vector.pt
+
+python src/edit_model.py \
+  --model-ckpt experiments/logs/waterbirds/pretrained.pt \
+  --task-vector experiments/results/waterbirds_vector.pt \
+  --alpha -1.0 \
+  --output experiments/results/waterbirds_forget.pt
+
+python src/analyze.py \
+  --method pca \
+  --trajectory experiments/logs/waterbirds/snapshots \
+  --n-components 2 \
+  --output experiments/results/pca_summary.txt
 
 echo "Pipeline complete."

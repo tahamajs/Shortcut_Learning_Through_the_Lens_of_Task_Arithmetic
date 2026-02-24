@@ -1,6 +1,7 @@
 import pytest
 
 torch = pytest.importorskip("torch")
+import torch
 
 from shortcut_patcher.src.edit_model import apply_task_edit
 
@@ -18,3 +19,5 @@ def test_apply_task_edit_composition():
     vec2 = {"w": torch.tensor([-0.5, 1.0])}
     edited = apply_task_edit(base, [vec1, vec2], alphas=[1.0, -0.5])
     assert torch.allclose(edited["w"], torch.tensor([1.75, 2.0]))
+    edited = apply_task_edit(base, vec, alpha=-1.0)
+    assert torch.allclose(edited["w"], torch.tensor([0.75, 2.5]))

@@ -11,6 +11,7 @@ from utils import load_state_dict
 
 
 def compute_task_vector(pretrained_path: Path, finetuned_path: Path, include_regex: str | None = None) -> Dict[str, torch.Tensor]:
+def compute_task_vector(pretrained_path: Path, finetuned_path: Path) -> Dict[str, torch.Tensor]:
     w_pre = load_state_dict(pretrained_path)
     w_ft = load_state_dict(finetuned_path)
 
@@ -42,6 +43,11 @@ def main(args: argparse.Namespace) -> None:
     if args.random_like:
         vector = random_like_vector(vector, seed=args.seed)
 
+    return {k: w_ft[k] - w_pre[k] for k in w_pre.keys()}
+
+
+def main(args: argparse.Namespace) -> None:
+    vector = compute_task_vector(Path(args.pretrained), Path(args.finetuned))
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.save(vector, out)
