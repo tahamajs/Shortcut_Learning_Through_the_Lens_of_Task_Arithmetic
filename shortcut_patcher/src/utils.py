@@ -181,7 +181,6 @@ def _to_device_labels(y: Any, device: torch.device) -> Tuple[torch.Tensor, Dict[
     return y.to(device), None
 
 
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict[str, Any]:
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict[str, float]:
     model.eval()
     total = 0
@@ -223,21 +222,6 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
     return metrics
 
 
-def save_checkpoint(path: Path, model: nn.Module, step: int, metrics: Dict[str, Any] | None = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"step": step, "state_dict": model.state_dict(), "metrics": metrics or {}}, path)
-    with torch.no_grad():
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            logits = model(x)
-            loss = ce(logits, y)
-            pred = logits.argmax(dim=-1)
-            correct += (pred == y).sum().item()
-            total += y.numel()
-            loss_sum += loss.item() * y.numel()
-    return {"accuracy": correct / max(total, 1), "loss": loss_sum / max(total, 1)}
-
-
 def save_checkpoint(path: Path, model: nn.Module, step: int, metrics: Dict[str, float] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -256,7 +240,6 @@ def load_state_dict(path: Path) -> Dict[str, torch.Tensor]:
 
 
 def write_json(path: Path, data: Dict[str, Any]) -> None:
-def write_json(path: Path, data: Dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
 

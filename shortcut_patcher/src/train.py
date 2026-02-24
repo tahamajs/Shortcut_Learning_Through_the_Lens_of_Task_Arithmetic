@@ -268,24 +268,17 @@ def train_on_task(args: argparse.Namespace) -> None:
             optimizer.zero_grad(set_to_none=True)
             step += 1
 
+            # log to terminal
             if step % args.log_every == 0 or step == args.max_steps:
                 val_metrics = evaluate(model, val_loader, device)
                 curves.append({"step": step, **val_metrics})
+                print(f"[step {step}] train_loss={loss.item():.4f} "
+                      f"val_acc={val_metrics.get('accuracy',0):.4f} "
+                      f"val_loss={val_metrics.get('loss',0):.4f}")
 
             if step % args.snapshot_every == 0 or step == args.max_steps:
                 val_metrics = evaluate(model, val_loader, device)
                 save_checkpoint(out / "snapshots" / f"ckpt_{step:05d}.pt", model, step=step, metrics=val_metrics)
-
-            step += 1
-
-            if step % args.snapshot_every == 0 or step == args.max_steps:
-                val_metrics = evaluate(model, val_loader, device)
-                save_checkpoint(
-                    out / "snapshots" / f"ckpt_{step:05d}.pt",
-                    model,
-                    step=step,
-                    metrics=val_metrics,
-                )
 
             if step >= args.max_steps:
                 break
@@ -311,16 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weight-decay", type=float, default=0.1)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--output", required=True)
-    p.add_argument("--lr", type=float, default=1e-5)
-    p.add_argument("--weight-decay", type=float, default=0.1)
     p.add_argument(
         "--spurious-strength",
         type=float,
         default=None,
         help="override the synthetic shortcut strength used by the dataset",
     )
-    p.add_argument("--cpu", action="store_true")
-    p.add_argument("--output", required=True)
 
     # NEW: choose which label field is used for training (critical for shortcut datasets)
     p.add_argument(
@@ -345,5 +334,4 @@ def build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     args = build_parser().parse_args()
-    train_on_task(args)
     train_on_task(args)
