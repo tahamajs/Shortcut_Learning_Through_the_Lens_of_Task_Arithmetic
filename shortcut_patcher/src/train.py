@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict, List
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
+import logging
 
 import torch
 from torch import nn
@@ -11,6 +11,20 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
 from utils import build_dataloaders, evaluate, load_pretrained, save_checkpoint, set_seed, write_json
+
+
+def setup_logging(log_file: Path | None = None) -> None:
+    """Configure logging to both console and file.
+
+    If ``log_file`` is provided the file handler appends to it; otherwise only
+    stdout is used.  The training routine will call ``logging.info`` instead of
+    ``print`` so messages show up in both places.
+    """
+    handlers: List[logging.Handler] = [logging.StreamHandler()]
+    if log_file is not None:
+        handlers.append(logging.FileHandler(log_file, mode="a"))
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", handlers=handlers)
+
 
 
 def warmup_cosine_lambda(step: int, warmup_steps: int, total_steps: int) -> float:
@@ -175,6 +189,10 @@ def _sanity_print_once(x: torch.Tensor, y_raw: Any, y: torch.Tensor, logits: tor
 # Training
 # -----------------------------
 def train_on_task(args: argparse.Namespace) -> None:
+    outdir = Path(args.output)
+    outdir.mkdir(parents=True, exist_ok=True)
+    setup_logging(outdir / "train.log")
+    logging.info("starting training task=%s model=%s", args.task, args.model)
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
 
@@ -204,10 +222,10 @@ def train_on_task(args: argparse.Namespace) -> None:
     else:
         num_classes = inferred_classes
         if current_classes != num_classes:
-            print(f"[info] patching head: model_out={current_classes} -> inferred_num_classes={num_classes}")
+            logging.info("patching head: model_out=%d -> inferred_num_classes=%d", current_classes, num_classes)
             model = patch_synthetic_mlp_head(model, num_classes).to(device)
         else:
-            print(f"[info] model head already matches num_classes={num_classes}")
+            logging.info("model head already matches num_classes=%d", num_classes)
 
     # Optimizer AFTER head patch
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -272,9 +290,8 @@ def train_on_task(args: argparse.Namespace) -> None:
             if step % args.log_every == 0 or step == args.max_steps:
                 val_metrics = evaluate(model, val_loader, device)
                 curves.append({"step": step, **val_metrics})
-                print(f"[step {step}] train_loss={loss.item():.4f} "
-                      f"val_acc={val_metrics.get('accuracy',0):.4f} "
-                      f"val_loss={val_metrics.get('loss',0):.4f}")
+                logging.info("step %d train_loss=%.4f val_acc=%.4f val_loss=%.4f", step,
+                             loss.item(), val_metrics.get('accuracy', 0), val_metrics.get('loss', 0))
 
             if step % args.snapshot_every == 0 or step == args.max_steps:
                 val_metrics = evaluate(model, val_loader, device)
@@ -287,7 +304,7 @@ def train_on_task(args: argparse.Namespace) -> None:
     save_checkpoint(out / "final.pt", model, step=step, metrics=test_metrics)
     write_json(out / "metrics.json", {"test": test_metrics, "steps": step, "curve": curves})
     write_json(out / "metrics.json", {"test": test_metrics, "steps": step})
-    print(f"Done. Metrics: {test_metrics}")
+    logging.info("Done. Metrics: %s", test_metrics)
 
 
 def build_parser() -> argparse.ArgumentParser:

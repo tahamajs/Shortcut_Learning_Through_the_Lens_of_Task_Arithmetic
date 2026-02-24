@@ -12,6 +12,7 @@ mkdir -p "$LOG_DIR" "$RES_DIR"
 python data/vision_tasks.py --output data
 python data/text_tasks.py --output data
 
+# run training and copy stdout/stderr to a logfile so we can follow progress
 python src/train.py \
   --task WaterbirdsShortcut \
   --model synthetic-mlp \
@@ -19,7 +20,7 @@ python src/train.py \
   --max-steps 300 \
   --snapshot-every 50 \
   --log-every 50 \
-  --output "$LOG_DIR"
+  --output "$LOG_DIR" 2>&1 | tee "$LOG_DIR/train.log"
 
 python - <<'PY'
 from pathlib import Path
