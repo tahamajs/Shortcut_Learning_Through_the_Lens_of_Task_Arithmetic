@@ -11,6 +11,7 @@ from sklearn.cross_decomposition import CCA
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 
+from utils import build_dataloaders, flatten_state_dict, load_pretrained, load_state_dict
 from utils import flatten_state_dict, load_state_dict
 
 
@@ -49,6 +50,26 @@ def gradient_alignment(trajectory: np.ndarray, final_task_vector: np.ndarray) ->
     return np.array(sims)
 
 
+def extract_activations(task: str, model_name: str, max_batches: int = 5) -> tuple[np.ndarray, np.ndarray]:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_pretrained(model_name).to(device).eval()
+    _, _, test_loader = build_dataloaders(task, batch_size=128)
+
+    features = []
+    labels = []
+    with torch.no_grad():
+        for idx, (x, y) in enumerate(test_loader):
+            x = x.to(device)
+            y_cls = y["y"].numpy() if isinstance(y, dict) else y.numpy()
+            logits = model(x)
+            features.append(logits.detach().cpu().numpy())
+            labels.append(y_cls)
+            if idx + 1 >= max_batches:
+                break
+
+    return np.concatenate(features, axis=0), np.concatenate(labels, axis=0)
+
+
 def main(args: argparse.Namespace) -> None:
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +103,12 @@ def main(args: argparse.Namespace) -> None:
         corr = [float(np.corrcoef(x_c[:, i], y_c[:, i])[0, 1]) for i in range(x_c.shape[1])]
         out.write_text(f"cca_correlations={corr}\n")
 
+    elif args.method == "extract":
+        feats, labels = extract_activations(args.task, args.model, max_batches=args.max_batches)
+        np.save(out.with_suffix(".features.npy"), feats)
+        np.save(out.with_suffix(".labels.npy"), labels)
+        out.write_text("saved_features_and_labels\n")
+
     else:
         raise ValueError(f"Unknown method {args.method}")
 
@@ -90,12 +117,16 @@ def main(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Analyze weight trajectories and representations.")
+    p.add_argument("--method", choices=["pca", "alignment", "probe", "cca", "extract"], required=True)
     p.add_argument("--method", choices=["pca", "alignment", "probe", "cca"], required=True)
     p.add_argument("--trajectory")
     p.add_argument("--final-vector")
     p.add_argument("--features")
     p.add_argument("--features-b")
     p.add_argument("--labels")
+    p.add_argument("--task", default="WaterbirdsShortcut")
+    p.add_argument("--model", default="synthetic-mlp")
+    p.add_argument("--max-batches", type=int, default=5)
     p.add_argument("--n-components", type=int, default=2)
     p.add_argument("--save-model", action="store_true")
     p.add_argument("--output", required=True)
