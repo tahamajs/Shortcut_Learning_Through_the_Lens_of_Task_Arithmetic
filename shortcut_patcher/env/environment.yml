@@ -1,0 +1,19 @@
+name: shortcut-patcher
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pytorch>=2.2
+  - torchvision
+  - pip
+  - numpy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - umap-learn
+  - pip:
+      - transformers>=4.40
+      - datasets>=2.18
+      - detoxify
+      - joblib

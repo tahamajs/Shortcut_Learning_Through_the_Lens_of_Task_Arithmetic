@@ -1,0 +1,131 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{float}
+\title{Identifying and Mitigating Shortcut Learning via Task Arithmetic}
+\author{Implementation Blueprint + Reproducible Codebase}
+\date{\today}
+
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Shortcut learning causes high in-distribution performance but poor robustness under distribution shift. This document provides a complete implementation-ready protocol using task arithmetic and trajectory analysis. We define modular training, task-vector extraction, and post-hoc editing workflows; include concrete CLIs and reproducibility assets; and outline evaluation on vision and language shortcut benchmarks. The accompanying codebase in \texttt{shortcut\_patcher/} is executable end-to-end.
+\end{abstract}
+
+\section{Introduction}
+Neural models frequently exploit spurious correlations such as backgrounds, textures, or demographic proxies. These ``shortcut'' features are predictive in training data but fail under shifts \cite{geirhos2020shortcut,murali2023spurious}. Task arithmetic offers a practical post-hoc intervention: for pretrained weights $w_{\text{pre}}$ and task-finetuned weights $w_T$, define $v_T = w_T - w_{\text{pre}}$; adding/subtracting $v_T$ edits behavior without re-training \cite{ilharco2023task}.
+
+\section{Method Overview}
+\subsection{Task vectors and edits}
+Given a task vector $v_T$, edited parameters are:
+\begin{equation}
+w_{\text{edit}} = w_{\text{base}} + \alpha v_T,
+\end{equation}
+where $\alpha=-1$ forgets task $T$ and positive $\alpha$ amplifies/combines skills.
+
+\subsection{Trajectory diagnostics}
+We log checkpoints every $k$ steps and analyze:
+\begin{itemize}[leftmargin=*]
+  \item PCA of flattened weights.
+  \item Gradient alignment with final task vector.
+  \item Linear probes for shortcut attributes.
+  \item CCA across representations pre/post edit.
+\end{itemize}
+
+\section{Experimental Protocol}
+\textbf{Vision tasks:} Cars, DTD, EuroSAT, GTSRB, MNIST, RESISC45, SUN397, SVHN, Waterbirds, CelebA.\\
+\textbf{Language tasks:} GPT-2 toxicity fine-tuning with WikiText control.
+
+\textbf{Training defaults:} AdamW, lr $1\mathrm{e}{-5}$, wd=0.1, cosine schedule, snapshots every 100 steps.
+
+\section{Repository Layout}
+\begin{lstlisting}
+shortcut_patcher/
+  data/{vision_tasks.py,text_tasks.py}
+  src/{train.py,task_vector.py,edit_model.py,analyze.py,utils.py,visualize.py}
+  env/{Dockerfile,environment.yml}
+  experiments/{logs,results,figures}
+  run_pipeline.sh
+  paper/{main.tex,references.bib}
+\end{lstlisting}
+
+\section{Implementation Notes}
+\subsection{Training and snapshot logging}
+\begin{lstlisting}[language=bash]
+python src/train.py --task WaterbirdsShortcut --model synthetic-mlp \
+  --max-steps 2000 --snapshot-every 100 --output experiments/logs/waterbirds
+\end{lstlisting}
+
+\subsection{Task-vector computation}
+\begin{lstlisting}[language=bash]
+python src/task_vector.py \
+  --pretrained experiments/logs/waterbirds/pretrained.pt \
+  --finetuned experiments/logs/waterbirds/final.pt \
+  --output experiments/results/waterbirds_vector.pt
+\end{lstlisting}
+
+\subsection{Model editing}
+\begin{lstlisting}[language=bash]
+python src/edit_model.py --model-ckpt experiments/logs/waterbirds/pretrained.pt \
+  --task-vector experiments/results/waterbirds_vector.pt \
+  --alpha -1.0 --output experiments/results/waterbirds_forget.pt
+\end{lstlisting}
+
+\subsection{Trajectory analysis}
+\begin{lstlisting}[language=bash]
+python src/analyze.py --method pca \
+  --trajectory experiments/logs/waterbirds/snapshots \
+  --output experiments/results/pca_summary.txt
+\end{lstlisting}
+
+\section{Evaluation}
+Report:
+\begin{itemize}[leftmargin=*]
+  \item In-distribution accuracy (target/control)
+  \item OOD and worst-group accuracy
+  \item Robustness gap
+  \item Toxicity and perplexity for GPT-2
+  \item Compute budget and wall-clock
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption{Vision Forgetting Benchmark Template}
+\begin{tabular}{lccc}
+\toprule
+Method & Target Acc & Control Acc & Worst-Group Acc \\
+\midrule
+Fine-tuned baseline & -- & -- & -- \\
+Gradient ascent unlearn & -- & -- & -- \\
+Random vector edit & -- & -- & -- \\
+Negative task vector & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Mermaid Pipeline}
+\begin{lstlisting}
+flowchart LR
+  A[Pretrained Model] --> B[Fine-tune on Task T]
+  B --> C[Compute v_T = w_T - w_pre]
+  C --> D[Apply alpha=-1 to forget]
+  C --> E[Apply alpha=+1 for add/composition]
+  D --> F[Evaluate ID/OOD/Worst-group]
+  E --> F
+\end{lstlisting}
+
+\section{Conclusion}
+This artifact provides a full, reproducible implementation for identifying shortcut directions and mitigating them with task arithmetic. The code is intentionally modular so real CLIP/GPT-2 pipelines can replace synthetic loaders with minimal changes.
+
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}
