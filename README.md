@@ -24,6 +24,13 @@ cd shortcut_patcher
 bash run_pipeline.sh
 ```
 
+For a stronger robust run (recommended):
+
+```bash
+cd shortcut_patcher
+METHOD=groupdro MAX_STEPS=2000 BATCH_SIZE=64 SNAPSHOT_EVERY=100 LOG_EVERY=100 bash run_pipeline.sh
+```
+
 Outputs are written to:
 
 - `experiments/logs/waterbirds/`
