@@ -23,6 +23,8 @@ def compute_task_vector(pretrained_path: Path, finetuned_path: Path, include_reg
     for k in w_pre.keys():
         if matcher and not matcher.search(k):
             continue
+        if (not torch.is_floating_point(w_pre[k])) or (not torch.is_floating_point(w_ft[k])):
+            continue
         out[k] = w_ft[k] - w_pre[k]
     return out
 
@@ -31,6 +33,8 @@ def random_like_vector(reference_vector: Dict[str, torch.Tensor], seed: int) -> 
     gen = torch.Generator().manual_seed(seed)
     out: Dict[str, torch.Tensor] = {}
     for name, tensor in reference_vector.items():
+        if not torch.is_floating_point(tensor):
+            continue
         rnd = torch.randn(tensor.shape, generator=gen, dtype=tensor.dtype)
         rnd = rnd / (rnd.norm() + 1e-8)
         out[name] = rnd * tensor.norm()
