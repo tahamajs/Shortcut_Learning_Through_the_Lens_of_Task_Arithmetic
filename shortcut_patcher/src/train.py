@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from utils import build_dataloaders, evaluate, load_pretrained, save_checkpoint, set_seed, write_json
 
@@ -121,6 +123,8 @@ def infer_num_classes(loader, label_key: str | None = None, label_index: int = 0
 
 
 def _get_model_num_classes(model: nn.Module) -> int | None:
+    if hasattr(model, "fc") and isinstance(model.fc, nn.Linear):
+        return int(model.fc.out_features)
     if hasattr(model, "net") and isinstance(model.net, nn.Sequential):
         last = model.net[-1]
         if isinstance(last, nn.Linear):
@@ -128,14 +132,110 @@ def _get_model_num_classes(model: nn.Module) -> int | None:
     return None
 
 
-def patch_synthetic_mlp_head(model: nn.Module, num_classes: int) -> nn.Module:
+def patch_model_head(model: nn.Module, num_classes: int) -> nn.Module:
+    if hasattr(model, "fc") and isinstance(model.fc, nn.Linear):
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+        return model
     if hasattr(model, "net") and isinstance(model.net, nn.Sequential):
         last = model.net[-1]
         if isinstance(last, nn.Linear):
             in_features = last.in_features
             model.net[-1] = nn.Linear(in_features, num_classes)
             return model
-    raise ValueError("Expected synthetic-mlp with model.net as nn.Sequential and last layer nn.Linear")
+    raise ValueError("Could not patch model head for this architecture")
+
+
+def _extract_group(batch_y: Any) -> Optional[torch.Tensor]:
+    if isinstance(batch_y, dict) and "group" in batch_y:
+        g = batch_y["group"]
+        if torch.is_tensor(g):
+            return g.long()
+    return None
+
+
+def _collect_group_ids(dataset) -> Optional[List[int]]:
+    if hasattr(dataset, "group") and torch.is_tensor(getattr(dataset, "group")):
+        return [int(v) for v in dataset.group.detach().cpu().tolist()]
+
+    if hasattr(dataset, "rows"):
+        rows = getattr(dataset, "rows")
+        if rows and isinstance(rows[0], dict) and ("y" in rows[0]) and ("place" in rows[0]):
+            y_map = getattr(dataset, "y_map", None)
+            gids: List[int] = []
+            for r in rows:
+                y_raw = int(r["y"])
+                y = int(y_map[y_raw]) if isinstance(y_map, dict) else y_raw
+                place = int(r["place"])
+                gids.append(2 * y + place)
+            return gids
+
+    return None
+
+
+def _build_group_balanced_loader(loader: DataLoader, batch_size: int) -> Optional[DataLoader]:
+    gids = _collect_group_ids(loader.dataset)
+    if not gids:
+        return None
+
+    counts = Counter(gids)
+    if len(counts) < 2:
+        return None
+
+    sample_weights = torch.tensor([1.0 / counts[g] for g in gids], dtype=torch.double)
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
+    return DataLoader(
+        loader.dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=loader.num_workers,
+        pin_memory=getattr(loader, "pin_memory", False),
+    )
+
+
+def _groupdro_loss(
+    per_sample_loss: torch.Tensor,
+    groups: torch.Tensor,
+    adv_probs: Dict[int, float],
+    eta: float,
+) -> tuple[torch.Tensor, Dict[int, float]]:
+    device = per_sample_loss.device
+    present_groups = torch.unique(groups.detach()).tolist()
+
+    # initialize unseen groups in adv distribution
+    for g in present_groups:
+        gi = int(g)
+        if gi not in adv_probs:
+            adv_probs[gi] = 1.0
+
+    # compute mean loss per present group
+    group_losses: Dict[int, torch.Tensor] = {}
+    for g in present_groups:
+        gi = int(g)
+        mask = groups == gi
+        group_losses[gi] = per_sample_loss[mask].mean()
+
+    # multiplicative updates on present groups
+    for gi, gl in group_losses.items():
+        adv_probs[gi] *= float(torch.exp(eta * gl.detach()).item())
+
+    # normalize
+    z = sum(adv_probs.values()) + 1e-12
+    for gi in list(adv_probs.keys()):
+        adv_probs[gi] /= z
+
+    # robust objective over present groups (with normalized present mass)
+    present_mass = sum(adv_probs[int(g)] for g in present_groups) + 1e-12
+    obj = torch.zeros((), device=device)
+    for gi, gl in group_losses.items():
+        w = adv_probs[gi] / present_mass
+        obj = obj + float(w) * gl
+
+    return obj, adv_probs
 
 
 def _select_device(force_cpu: bool) -> torch.device:
@@ -162,33 +262,6 @@ def _sanity_print_once(x: torch.Tensor, y_raw: Any, y: torch.Tensor, logits: tor
     print("[sanity] logits:", tuple(logits.shape), logits.dtype)
 
 
-def _group_dro_loss(
-    losses: torch.Tensor,
-    groups: torch.Tensor,
-    q_state: Dict[int, float],
-    eta: float,
-) -> torch.Tensor:
-    group_losses: Dict[int, torch.Tensor] = {}
-    unique_groups = torch.unique(groups).tolist()
-    for g in unique_groups:
-        mask = groups == int(g)
-        group_losses[int(g)] = losses[mask].mean()
-
-    # Update adversarial group weights q
-    for g, l in group_losses.items():
-        q_prev = q_state.get(g, 1.0)
-        q_state[g] = q_prev * math.exp(float(eta) * float(l.detach().cpu().item()))
-
-    z = sum(q_state.values()) + 1e-12
-    for g in q_state.keys():
-        q_state[g] /= z
-
-    weighted = 0.0
-    for g, l in group_losses.items():
-        weighted = weighted + q_state[g] * l
-    return weighted
-
-
 # -----------------------------
 # Training
 # -----------------------------
@@ -209,10 +282,16 @@ def train_on_task(args: argparse.Namespace) -> None:
         args.task,
         args.batch_size,
         spurious_strength=args.spurious_strength,
-        data_root=args.data_root,
         num_workers=args.num_workers,
-        group_balanced=args.group_balanced,
     )
+
+    if args.group_balanced_sampler:
+        maybe_balanced = _build_group_balanced_loader(train_loader, args.batch_size)
+        if maybe_balanced is not None:
+            train_loader = maybe_balanced
+            logging.info("enabled group-balanced sampler")
+        else:
+            logging.info("group-balanced sampler requested but unavailable for this dataset")
 
     # Model (initially)
     model = load_pretrained(args.model).to(device)
@@ -227,7 +306,7 @@ def train_on_task(args: argparse.Namespace) -> None:
 
     if current_classes is not None and current_classes != inferred_classes:
         logging.info("patching head: model_out=%d -> inferred_num_classes=%d", current_classes, inferred_classes)
-        model = patch_synthetic_mlp_head(model, inferred_classes).to(device)
+        model = patch_model_head(model, inferred_classes).to(device)
     else:
         logging.info("model head classes=%s inferred=%d", str(current_classes), inferred_classes)
 
@@ -237,10 +316,7 @@ def train_on_task(args: argparse.Namespace) -> None:
         optimizer,
         lr_lambda=lambda s: warmup_cosine_lambda(s, args.warmup_steps, args.max_steps),
     )
-    criterion = nn.CrossEntropyLoss(reduction="none", label_smoothing=args.label_smoothing)
-    q_state: Dict[int, float] = {}
-    amp_enabled = bool(args.amp and device.type == "cuda")
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    criterion = nn.CrossEntropyLoss(reduction="none")
 
     # Save "pretrained" checkpoint (post head patch, to keep shapes consistent)
     save_checkpoint(outdir / "pretrained.pt", model, step=0)
@@ -248,6 +324,10 @@ def train_on_task(args: argparse.Namespace) -> None:
     curves: List[Dict[str, Any]] = []
     step = 0
     printed_sanity = False
+    best_val = -1.0
+    best_step = 0
+    best_metrics: Dict[str, Any] = {}
+    adv_probs: Dict[int, float] = {}
 
     while step < args.max_steps:
         for x, y_raw in train_loader:
@@ -259,8 +339,7 @@ def train_on_task(args: argparse.Namespace) -> None:
             y = _normalize_labels_for_ce(y)
 
             model.train()
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
-                logits = model(x)
+            logits = model(x)
 
             if (not printed_sanity) and args.sanity:
                 _sanity_print_once(x, y_raw, y, logits)
@@ -280,19 +359,18 @@ def train_on_task(args: argparse.Namespace) -> None:
                     f"Likely training on wrong label field (e.g. group IDs). Use --label-key y."
                 )
 
-            losses = criterion(logits, y)
-            if args.robust_objective == "group_dro" and isinstance(y_raw, dict) and "group" in y_raw:
-                groups = y_raw["group"].to(device).long().reshape(-1)
-                loss = _group_dro_loss(losses, groups, q_state=q_state, eta=args.group_dro_eta)
+            per_loss = criterion(logits, y)
+            if args.method == "groupdro":
+                g = _extract_group(y_raw)
+                if g is not None:
+                    g = g.to(device)
+                    loss, adv_probs = _groupdro_loss(per_loss, g, adv_probs, args.groupdro_eta)
+                else:
+                    loss = per_loss.mean()
             else:
-                loss = losses.mean()
-
-            scaler.scale(loss).backward()
-            if args.grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
+                loss = per_loss.mean()
+            loss.backward()
+            optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
@@ -301,22 +379,27 @@ def train_on_task(args: argparse.Namespace) -> None:
             # Val logging curve
             if step % args.log_every == 0 or step == args.max_steps:
                 val_metrics = evaluate(model, val_loader, device)
-                row = {
+                objective_metric = float(val_metrics.get("worst_group_accuracy", val_metrics.get("accuracy", 0.0)))
+                curves.append({
                     "step": step,
-                    "lr": float(optimizer.param_groups[0]["lr"]),
-                    "train_loss": float(loss.item()),
+                    "method": args.method,
                     **val_metrics,
-                }
-                curves.append(row)
+                })
                 logging.info(
-                    "step %d lr=%.3g train_loss=%.4f val_acc=%.4f val_loss=%.4f val_wga=%.4f",
+                    "step %d lr=%.3g train_loss=%.4f val_acc=%.4f val_worst=%.4f val_loss=%.4f",
                     step,
                     float(optimizer.param_groups[0]["lr"]),
                     float(loss.item()),
                     float(val_metrics.get("accuracy", 0.0)),
+                    float(val_metrics.get("worst_group_accuracy", float("nan"))),
                     float(val_metrics.get("loss", 0.0)),
-                    float(val_metrics.get("worst_group_accuracy", 0.0)),
                 )
+
+                if objective_metric > best_val:
+                    best_val = objective_metric
+                    best_step = step
+                    best_metrics = dict(val_metrics)
+                    save_checkpoint(outdir / "best.pt", model, step=step, metrics=val_metrics)
 
             # Snapshots
             if step % args.snapshot_every == 0 or step == args.max_steps:
@@ -332,8 +415,28 @@ def train_on_task(args: argparse.Namespace) -> None:
     test_metrics = evaluate(model, test_loader, device)
     save_checkpoint(outdir / "final.pt", model, step=step, metrics=test_metrics)
 
+    best_test_metrics: Dict[str, Any] = {}
+    if (outdir / "best.pt").exists():
+        best_payload = torch.load(outdir / "best.pt", map_location="cpu")
+        best_sd = best_payload["state_dict"] if isinstance(best_payload, dict) and "state_dict" in best_payload else best_payload
+        model.load_state_dict(best_sd, strict=False)
+        best_test_metrics = evaluate(model, test_loader, device)
+
     # Single metrics.json (with curve preserved)
-    write_json(outdir / "metrics.json", {"test": test_metrics, "steps": step, "curve": curves})
+    write_json(
+        outdir / "metrics.json",
+        {
+            "method": args.method,
+            "test": test_metrics,
+            "best": {
+                "step": best_step,
+                "val": best_metrics,
+                "test": best_test_metrics,
+            },
+            "steps": step,
+            "curve": curves,
+        },
+    )
     logging.info("done. test=%s", test_metrics)
 
 
@@ -350,22 +453,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-steps", type=int, default=2000)
     p.add_argument("--snapshot-every", type=int, default=100)
     p.add_argument("--log-every", type=int, default=50)
+    p.add_argument("--num-workers", type=int, default=2)
 
     p.add_argument("--warmup-steps", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight-decay", type=float, default=0.1)
+    p.add_argument("--method", choices=["erm", "groupdro"], default="groupdro")
+    p.add_argument("--groupdro-eta", type=float, default=0.1)
+    p.add_argument("--group-balanced-sampler", action="store_true")
 
     p.add_argument("--spurious-strength", type=float, default=None)
-    p.add_argument("--data-root", type=str, default=None, help="Dataset root containing metadata.csv")
-    p.add_argument("--num-workers", type=int, default=0)
-    p.add_argument("--group-balanced", action="store_true", help="Use weighted sampling by spurious groups.")
-
-    p.add_argument("--robust-objective", choices=["erm", "group_dro"], default="group_dro")
-    p.add_argument("--group-dro-eta", type=float, default=0.2, help="Adversarial update strength for GroupDRO q.")
-    p.add_argument("--grad-clip", type=float, default=1.0)
-    p.add_argument("--label-smoothing", type=float, default=0.05)
-    p.add_argument("--amp", action="store_true", help="Enable automatic mixed precision on CUDA.")
-
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--output", required=True)
 
