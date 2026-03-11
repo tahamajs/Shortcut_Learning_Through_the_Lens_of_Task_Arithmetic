@@ -41,11 +41,19 @@ We log checkpoints every $k$ steps and analyze:
   \item CCA across representations pre/post edit.
 \end{itemize}
 
+\subsection{Robust optimization for shortcut-heavy data}
+For group-annotated benchmarks (e.g., Waterbirds), we optimize a group-aware objective:
+\begin{equation}
+\mathcal{L}_{\text{GroupDRO}} = \sum_{g \in \mathcal{G}} q_g \cdot \mathbb{E}[\ell(x,y)\mid g], \quad
+q_g \propto q_g\exp(\eta\,\mathbb{E}[\ell\mid g]).
+\end{equation}
+This emphasizes hard groups during optimization and directly targets worst-group performance.
+
 \section{Experimental Protocol}
 \textbf{Vision tasks:} Cars, DTD, EuroSAT, GTSRB, MNIST, RESISC45, SUN397, SVHN, Waterbirds, CelebA.\\
 \textbf{Language tasks:} GPT-2 toxicity fine-tuning with WikiText control.
 
-\textbf{Training defaults:} AdamW, lr $1\mathrm{e}{-5}$, wd=0.1, cosine schedule, snapshots every 100 steps.
+\textbf{Training defaults (robust Waterbirds setting):} AdamW, lr $2\mathrm{e}{-4}$, weight decay $10^{-2}$, cosine schedule, label smoothing 0.05, gradient clipping 1.0, snapshots every 200 steps, and group-balanced sampling.
 
 \section{Repository Layout}
 \begin{lstlisting}
@@ -95,6 +103,7 @@ Report:
   \item Robustness gap
   \item Toxicity and perplexity for GPT-2
   \item Compute budget and wall-clock
+  \item Edit ablations for $\alpha \in \{-1.0,-0.5,0.25,0.5,1.0\}$
 \end{itemize}
 
 \begin{table}[H]
@@ -124,7 +133,7 @@ flowchart LR
 \end{lstlisting}
 
 \section{Conclusion}
-This artifact provides a full, reproducible implementation for identifying shortcut directions and mitigating them with task arithmetic. The code is intentionally modular so real CLIP/GPT-2 pipelines can replace synthetic loaders with minimal changes.
+This artifact provides a full, reproducible implementation for identifying shortcut directions and mitigating them with task arithmetic. The upgraded pipeline combines robust group-aware training with post-hoc editing and reports worst-group metrics by default, which better matches conference-grade empirical expectations.
 
 \bibliographystyle{plain}
 \bibliography{references}

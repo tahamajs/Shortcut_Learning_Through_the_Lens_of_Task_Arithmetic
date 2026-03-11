@@ -5,6 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 RUN_NAME="${RUN_NAME:-waterbirds}"
+DATA_ROOT="${DATA_ROOT:-}"
+MAX_STEPS="${MAX_STEPS:-1200}"
+SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-200}"
+EVAL_EVERY="${EVAL_EVERY:-100}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+LR="${LR:-2e-4}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-1e-2}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
 
 LOG_DIR="experiments/logs/${RUN_NAME}"
 RES_DIR="experiments/results/${RUN_NAME}"
@@ -19,6 +27,7 @@ exec > >(tee -a "$PIPELINE_LOG") 2>&1
 
 echo "==================== PIPELINE START ===================="
 echo "[info] RUN_NAME=$RUN_NAME"
+echo "[info] DATA_ROOT=${DATA_ROOT:-<auto>}"
 echo "[info] LOG_DIR=$LOG_DIR"
 echo "[info] RES_DIR=$RES_DIR"
 echo "[info] PIPELINE_LOG=$PIPELINE_LOG"
@@ -40,9 +49,19 @@ python src/train.py \
   --task WaterbirdsShortcut \
   --model resnet18 \
   --seed 42 \
-  --max-steps 300 \
-  --snapshot-every 50 \
-  --log-every 50 \
+  --batch-size "$BATCH_SIZE" \
+  --max-steps "$MAX_STEPS" \
+  --snapshot-every "$SNAPSHOT_EVERY" \
+  --log-every "$EVAL_EVERY" \
+  --lr "$LR" \
+  --weight-decay "$WEIGHT_DECAY" \
+  --num-workers "$NUM_WORKERS" \
+  --group-balanced \
+  --robust-objective group_dro \
+  --group-dro-eta 0.2 \
+  --grad-clip 1.0 \
+  --label-smoothing 0.05 \
+  ${DATA_ROOT:+--data-root "$DATA_ROOT"} \
   --output "$LOG_DIR"
 
 # ------------------------------------------------------------------
@@ -125,8 +144,20 @@ echo "==> Applying edits"
 python src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/task_vector.pt" \
+  --alpha -0.5 \
+  --output "$RES_DIR/forget_half.pt"
+
+python src/edit_model.py \
+  --model-ckpt "$LOG_DIR/pretrained.pt" \
+  --task-vector "$RES_DIR/task_vector.pt" \
   --alpha -1.0 \
   --output "$RES_DIR/forget.pt"
+
+python src/edit_model.py \
+  --model-ckpt "$LOG_DIR/pretrained.pt" \
+  --task-vector "$RES_DIR/task_vector.pt" \
+  --alpha 0.25 \
+  --output "$RES_DIR/quarter.pt"
 
 python src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
@@ -154,9 +185,13 @@ echo "==> Evaluating checkpoints"
 python src/eval_ckpt.py \
   --task WaterbirdsShortcut \
   --model resnet18 \
+  ${DATA_ROOT:+--data-root "$DATA_ROOT"} \
+  --num-workers "$NUM_WORKERS" \
   --ckpt pretrained="$LOG_DIR/pretrained.pt" \
   --ckpt finetuned="$LOG_DIR/final.pt" \
+  --ckpt forget_half="$RES_DIR/forget_half.pt" \
   --ckpt forget="$RES_DIR/forget.pt" \
+  --ckpt quarter="$RES_DIR/quarter.pt" \
   --ckpt add="$RES_DIR/add.pt" \
   --ckpt half="$RES_DIR/half.pt" \
   --ckpt random="$RES_DIR/random_baseline.pt" \

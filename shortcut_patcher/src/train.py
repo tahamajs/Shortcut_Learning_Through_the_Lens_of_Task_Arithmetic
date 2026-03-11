@@ -162,6 +162,33 @@ def _sanity_print_once(x: torch.Tensor, y_raw: Any, y: torch.Tensor, logits: tor
     print("[sanity] logits:", tuple(logits.shape), logits.dtype)
 
 
+def _group_dro_loss(
+    losses: torch.Tensor,
+    groups: torch.Tensor,
+    q_state: Dict[int, float],
+    eta: float,
+) -> torch.Tensor:
+    group_losses: Dict[int, torch.Tensor] = {}
+    unique_groups = torch.unique(groups).tolist()
+    for g in unique_groups:
+        mask = groups == int(g)
+        group_losses[int(g)] = losses[mask].mean()
+
+    # Update adversarial group weights q
+    for g, l in group_losses.items():
+        q_prev = q_state.get(g, 1.0)
+        q_state[g] = q_prev * math.exp(float(eta) * float(l.detach().cpu().item()))
+
+    z = sum(q_state.values()) + 1e-12
+    for g in q_state.keys():
+        q_state[g] /= z
+
+    weighted = 0.0
+    for g, l in group_losses.items():
+        weighted = weighted + q_state[g] * l
+    return weighted
+
+
 # -----------------------------
 # Training
 # -----------------------------
@@ -179,7 +206,12 @@ def train_on_task(args: argparse.Namespace) -> None:
 
     # Data
     train_loader, val_loader, test_loader = build_dataloaders(
-        args.task, args.batch_size, spurious_strength=args.spurious_strength
+        args.task,
+        args.batch_size,
+        spurious_strength=args.spurious_strength,
+        data_root=args.data_root,
+        num_workers=args.num_workers,
+        group_balanced=args.group_balanced,
     )
 
     # Model (initially)
@@ -205,7 +237,10 @@ def train_on_task(args: argparse.Namespace) -> None:
         optimizer,
         lr_lambda=lambda s: warmup_cosine_lambda(s, args.warmup_steps, args.max_steps),
     )
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(reduction="none", label_smoothing=args.label_smoothing)
+    q_state: Dict[int, float] = {}
+    amp_enabled = bool(args.amp and device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
     # Save "pretrained" checkpoint (post head patch, to keep shapes consistent)
     save_checkpoint(outdir / "pretrained.pt", model, step=0)
@@ -224,7 +259,8 @@ def train_on_task(args: argparse.Namespace) -> None:
             y = _normalize_labels_for_ce(y)
 
             model.train()
-            logits = model(x)
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
+                logits = model(x)
 
             if (not printed_sanity) and args.sanity:
                 _sanity_print_once(x, y_raw, y, logits)
@@ -244,9 +280,19 @@ def train_on_task(args: argparse.Namespace) -> None:
                     f"Likely training on wrong label field (e.g. group IDs). Use --label-key y."
                 )
 
-            loss = criterion(logits, y)
-            loss.backward()
-            optimizer.step()
+            losses = criterion(logits, y)
+            if args.robust_objective == "group_dro" and isinstance(y_raw, dict) and "group" in y_raw:
+                groups = y_raw["group"].to(device).long().reshape(-1)
+                loss = _group_dro_loss(losses, groups, q_state=q_state, eta=args.group_dro_eta)
+            else:
+                loss = losses.mean()
+
+            scaler.scale(loss).backward()
+            if args.grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
@@ -255,14 +301,21 @@ def train_on_task(args: argparse.Namespace) -> None:
             # Val logging curve
             if step % args.log_every == 0 or step == args.max_steps:
                 val_metrics = evaluate(model, val_loader, device)
-                curves.append({"step": step, **val_metrics})
+                row = {
+                    "step": step,
+                    "lr": float(optimizer.param_groups[0]["lr"]),
+                    "train_loss": float(loss.item()),
+                    **val_metrics,
+                }
+                curves.append(row)
                 logging.info(
-                    "step %d lr=%.3g train_loss=%.4f val_acc=%.4f val_loss=%.4f",
+                    "step %d lr=%.3g train_loss=%.4f val_acc=%.4f val_loss=%.4f val_wga=%.4f",
                     step,
                     float(optimizer.param_groups[0]["lr"]),
                     float(loss.item()),
                     float(val_metrics.get("accuracy", 0.0)),
                     float(val_metrics.get("loss", 0.0)),
+                    float(val_metrics.get("worst_group_accuracy", 0.0)),
                 )
 
             # Snapshots
@@ -303,6 +356,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weight-decay", type=float, default=0.1)
 
     p.add_argument("--spurious-strength", type=float, default=None)
+    p.add_argument("--data-root", type=str, default=None, help="Dataset root containing metadata.csv")
+    p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--group-balanced", action="store_true", help="Use weighted sampling by spurious groups.")
+
+    p.add_argument("--robust-objective", choices=["erm", "group_dro"], default="group_dro")
+    p.add_argument("--group-dro-eta", type=float, default=0.2, help="Adversarial update strength for GroupDRO q.")
+    p.add_argument("--grad-clip", type=float, default=1.0)
+    p.add_argument("--label-smoothing", type=float, default=0.05)
+    p.add_argument("--amp", action="store_true", help="Enable automatic mixed precision on CUDA.")
+
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--output", required=True)
 

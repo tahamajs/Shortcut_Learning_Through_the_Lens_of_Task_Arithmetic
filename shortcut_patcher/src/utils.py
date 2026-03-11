@@ -5,34 +5,19 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset, WeightedRandomSampler
 
-# Optional torchvision only needed for real-image dataset / resnet model
 try:
     from PIL import Image
-    from torchvision import transforms, models
+    from torchvision import models, transforms
 except Exception:
     Image = None
-    transforms = None
     models = None
-
-import csv
-from pathlib import Path
-from typing import Dict, List, Tuple, Any, Optional
-
-import torch
-from torch.utils.data import Dataset
-
-try:
-    from PIL import Image
-    from torchvision import transforms
-except Exception:
-    Image = None
     transforms = None
 
 
@@ -115,6 +100,43 @@ class WaterbirdsFromMetadata(Dataset):
             "group": torch.tensor(group, dtype=torch.long),
         }
         return x, label
+
+
+def _infer_image_root_from_metadata(cub_root: Path) -> Path:
+    """
+    Resolve where image files live for Waterbirds/CUB-style metadata.
+    Prefers root itself, then root/images.
+    """
+    candidates = [cub_root, cub_root / "images"]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return cub_root
+
+
+def _find_waterbirds_root(explicit_root: Path | None = None) -> Path:
+    """
+    Searches common project locations for a folder containing metadata.csv.
+    """
+    if explicit_root is not None:
+        explicit_root = explicit_root.resolve()
+        if (explicit_root / "metadata.csv").exists():
+            return explicit_root
+        raise FileNotFoundError(f"Expected metadata.csv under {explicit_root}")
+
+    cwd = Path.cwd()
+    candidates = [
+        cwd / "data" / "waterbirds_v1.0",
+        cwd / "data" / "cub",
+        cwd.parent / "data" / "waterbirds_v1.0",
+        cwd.parent / "data" / "cub",
+    ]
+    for root in candidates:
+        if (root / "metadata.csv").exists():
+            return root
+    raise FileNotFoundError(
+        "Could not locate Waterbirds metadata.csv. Checked data/waterbirds_v1.0 and data/cub in workspace."
+    )
 # -----------------------------
 # Config
 # -----------------------------
@@ -334,31 +356,58 @@ def build_dataloaders(
     task_name: str,
     batch_size: int,
     spurious_strength: float | None = None,
+    data_root: str | None = None,
+    num_workers: int = 0,
+    group_balanced: bool = False,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
 
     name = task_name.lower()
 
     # ✅ Prefer real dataset if Waterbirds metadata exists
-    cub_root = Path("data") / "cub"
-    meta = cub_root / "metadata.csv"
-    if meta.exists() and ("waterbirds" in name or name.endswith("shortcut")):
+    if "waterbirds" in name:
         if transforms is None:
             raise RuntimeError("Need torchvision installed for image transforms.")
 
-        tfm = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-        ])
+        wb_root = _find_waterbirds_root(Path(data_root) if data_root else None)
+        _ = _infer_image_root_from_metadata(wb_root)
 
-        train = WaterbirdsFromMetadata(cub_root, split=0, transform=tfm)
-        val   = WaterbirdsFromMetadata(cub_root, split=1, transform=tfm)
-        test  = WaterbirdsFromMetadata(cub_root, split=2, transform=tfm)
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        train_tfm = transforms.Compose(
+            [
+                transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+                transforms.ToTensor(),
+                normalize,
+            ]
+        )
+        eval_tfm = transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                normalize,
+            ]
+        )
+
+        train = WaterbirdsFromMetadata(wb_root, split=0, transform=train_tfm)
+        val = WaterbirdsFromMetadata(wb_root, split=1, transform=eval_tfm)
+        test = WaterbirdsFromMetadata(wb_root, split=2, transform=eval_tfm)
+
+        sampler = None
+        shuffle = True
+        if group_balanced:
+            groups = torch.tensor([int(r["place"]) + 2 * int(train.y_map[int(r["y"])]) for r in train.rows], dtype=torch.long)
+            counts = torch.bincount(groups)
+            inv = 1.0 / torch.clamp(counts.float(), min=1.0)
+            weights = inv[groups]
+            sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
+            shuffle = False
 
         return (
-            DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=0),
-            DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=0),
-            DataLoader(test, batch_size=batch_size, shuffle=False, num_workers=0),
+            DataLoader(train, batch_size=batch_size, shuffle=shuffle, sampler=sampler, num_workers=num_workers),
+            DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=num_workers),
+            DataLoader(test, batch_size=batch_size, shuffle=False, num_workers=num_workers),
         )
 
     # 🔁 Otherwise fall back to your synthetic logic
@@ -372,9 +421,9 @@ def build_dataloaders(
         val = ShortcutDataset(1024, spurious_strength=strength, seed=1)
         test = ShortcutDataset(1024, spurious_strength=strength, seed=2)
         return (
-            DataLoader(train, batch_size=batch_size, shuffle=True),
-            DataLoader(val, batch_size=batch_size, shuffle=False),
-            DataLoader(test, batch_size=batch_size, shuffle=False),
+            DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=num_workers),
+            DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=num_workers),
+            DataLoader(test, batch_size=batch_size, shuffle=False, num_workers=num_workers),
         )
 
     # non-shortcut synthetic
@@ -386,9 +435,9 @@ def build_dataloaders(
     val   = synthetic_classification_dataset(1024, n_features, n_classes, strength, shortcut_matrix=shortcut_matrix, seed=1)
     test  = synthetic_classification_dataset(1024, n_features, n_classes, strength, shortcut_matrix=shortcut_matrix, seed=2)
     return (
-        DataLoader(train, batch_size=batch_size, shuffle=True),
-        DataLoader(val, batch_size=batch_size, shuffle=False),
-        DataLoader(test, batch_size=batch_size, shuffle=False),
+        DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=num_workers),
+        DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=num_workers),
+        DataLoader(test, batch_size=batch_size, shuffle=False, num_workers=num_workers),
     )
 
 # -----------------------------
