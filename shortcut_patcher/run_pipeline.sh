@@ -13,6 +13,7 @@ BATCH_SIZE="${BATCH_SIZE:-64}"
 LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-2}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 LOG_DIR="experiments/logs/${RUN_NAME}"
 RES_DIR="experiments/results/${RUN_NAME}"
@@ -28,6 +29,7 @@ exec > >(tee -a "$PIPELINE_LOG") 2>&1
 echo "==================== PIPELINE START ===================="
 echo "[info] RUN_NAME=$RUN_NAME"
 echo "[info] DATA_ROOT=${DATA_ROOT:-<auto>}"
+echo "[info] PYTHON_BIN=$PYTHON_BIN"
 echo "[info] LOG_DIR=$LOG_DIR"
 echo "[info] RES_DIR=$RES_DIR"
 echo "[info] PIPELINE_LOG=$PIPELINE_LOG"
@@ -37,15 +39,15 @@ echo "[info] PIPELINE_LOG=$PIPELINE_LOG"
 # ------------------------------------------------------------------
 echo ""
 echo "==> Generating data manifests"
-python data/vision_tasks.py --output data
-python data/text_tasks.py --output data
+"$PYTHON_BIN" data/vision_tasks.py --output data
+"$PYTHON_BIN" data/text_tasks.py --output data
 
 # ------------------------------------------------------------------
 # 2) Train (logs snapshots + metrics.json with curve)
 # ------------------------------------------------------------------
 echo ""
 echo "==> Training"
-python src/train.py \
+"$PYTHON_BIN" src/train.py \
   --task WaterbirdsShortcut \
   --model resnet18 \
   --seed 42 \
@@ -70,7 +72,7 @@ python src/train.py \
 echo ""
 echo "==> Building steps + curves arrays"
 export LOG_DIR RES_DIR RUN_NAME
-python - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import os, json
 from pathlib import Path
 import numpy as np
@@ -125,12 +127,12 @@ PY
 # ------------------------------------------------------------------
 echo ""
 echo "==> Computing task vectors"
-python src/task_vector.py \
+"$PYTHON_BIN" src/task_vector.py \
   --pretrained "$LOG_DIR/pretrained.pt" \
   --finetuned "$LOG_DIR/final.pt" \
   --output "$RES_DIR/task_vector.pt"
 
-python src/task_vector.py \
+"$PYTHON_BIN" src/task_vector.py \
   --pretrained "$LOG_DIR/pretrained.pt" \
   --finetuned "$LOG_DIR/final.pt" \
   --random-like \
@@ -141,37 +143,37 @@ python src/task_vector.py \
 # ------------------------------------------------------------------
 echo ""
 echo "==> Applying edits"
-python src/edit_model.py \
+"$PYTHON_BIN" src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/task_vector.pt" \
   --alpha -0.5 \
   --output "$RES_DIR/forget_half.pt"
 
-python src/edit_model.py \
+"$PYTHON_BIN" src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/task_vector.pt" \
   --alpha -1.0 \
   --output "$RES_DIR/forget.pt"
 
-python src/edit_model.py \
+"$PYTHON_BIN" src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/task_vector.pt" \
   --alpha 0.25 \
   --output "$RES_DIR/quarter.pt"
 
-python src/edit_model.py \
+"$PYTHON_BIN" src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/task_vector.pt" \
   --alpha 1.0 \
   --output "$RES_DIR/add.pt"
 
-python src/edit_model.py \
+"$PYTHON_BIN" src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/task_vector.pt" \
   --alpha 0.5 \
   --output "$RES_DIR/half.pt"
 
-python src/edit_model.py \
+"$PYTHON_BIN" src/edit_model.py \
   --model-ckpt "$LOG_DIR/pretrained.pt" \
   --task-vector "$RES_DIR/random_like_vector.pt" \
   --alpha 1.0 \
@@ -182,7 +184,7 @@ python src/edit_model.py \
 # ------------------------------------------------------------------
 echo ""
 echo "==> Evaluating checkpoints"
-python src/eval_ckpt.py \
+"$PYTHON_BIN" src/eval_ckpt.py \
   --task WaterbirdsShortcut \
   --model resnet18 \
   ${DATA_ROOT:+--data-root "$DATA_ROOT"} \
@@ -204,7 +206,7 @@ python src/eval_ckpt.py \
 # ------------------------------------------------------------------
 echo ""
 echo "==> PCA analysis"
-python src/analyze.py \
+"$PYTHON_BIN" src/analyze.py \
   --method pca \
   --trajectory "$LOG_DIR/snapshots" \
   --n-components 2 \
@@ -215,7 +217,7 @@ python src/analyze.py \
 # ------------------------------------------------------------------
 echo ""
 echo "==> Plotting accuracy curve"
-python src/visualize.py \
+"$PYTHON_BIN" src/visualize.py \
   --mode accuracy \
   --steps "$RES_DIR/steps.npy" \
   --target "$RES_DIR/target_acc.npy" \
